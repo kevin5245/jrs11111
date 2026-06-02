@@ -20,11 +20,6 @@ OUTPUT_M3U_FILE = "/app/output/playlist.m3u"
 OUTPUT_TXT_FILE = "/app/output/playlist.txt"
 REFRESHED_CHANNELS_FILE = "/app/output/refetched_channels.json"
 TARGET_KEY = "ABCDEFGHIJKLMNOPQRSTUVWX"
-LIVE833_API_URL = "https://urgetwg35nbhghj439b99.k8v4dh4.app/api/c5/business/livehouse/index?lang=zh"
-LIVE833_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-    "Referer": "https://urgetwg35nbhghj439b99.k8v4dh4.app/",
-}
 # ------------------
 
 app = Flask(__name__)
@@ -466,27 +461,6 @@ def get_m3u():
     try: return send_file(OUTPUT_M3U_FILE, mimetype='application/vnd.apple.mpegurl', as_attachment=False)
     except FileNotFoundError: return "File not found", 404
 
-
-@app.route('/833_m3u')
-def get_833_m3u():
-    try:
-        response = requests.get(LIVE833_API_URL, headers=LIVE833_HEADERS, timeout=8)
-        response.raise_for_status()
-        m3u_body = build_833_m3u_content(response.json())
-        return (
-            m3u_body,
-            200,
-            {
-                "Content-Type": "application/vnd.apple.mpegurl; charset=utf-8",
-                "Content-Disposition": 'inline; filename="live.m3u"',
-                "Access-Control-Allow-Origin": "*",
-            },
-        )
-    except requests.RequestException as e:
-        return f"上游抓取失败，错误详情: {e}", 502
-    except ValueError:
-        return "上游返回非 JSON 数据", 502
-
 @app.route('/txt')
 def get_txt():
     try: return send_file(OUTPUT_TXT_FILE, mimetype='text/plain', as_attachment=False)
@@ -537,28 +511,6 @@ def debug_url():
         debug_info["error"] = str(e)
     return jsonify(debug_info)
 
-
-def build_833_m3u_content(payload):
-    m3u_content = ["#EXTM3U"]
-    ongoing_livestreams = ((payload or {}).get("data") or {}).get("ongoingLivestreams") or []
-
-    for stream in ongoing_livestreams:
-        name = stream.get("houseName") or stream.get("nickName")
-        if not name or "播" in name:
-            continue
-
-        stream_url = stream.get("playStreamAddress2") or stream.get("playStreamAddress")
-        if not stream_url:
-            continue
-
-        user_image = stream.get("userImage") or ""
-        group_name = stream.get("houseNameEn") or "体育直播"
-        m3u_content.append(
-            f'#EXTINF:-1 tvg-name="{name}" tvg-logo="{user_image}" group-title="{group_name}",{name}'
-        )
-        m3u_content.append(stream_url)
-
-    return "\n".join(m3u_content) + "\n"
 
 def run_scheduler():
     schedule.every(11).minutes.do(generate_playlist)
