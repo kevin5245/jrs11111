@@ -20,7 +20,6 @@ OUTPUT_M3U_FILE = "/app/output/playlist.m3u"
 OUTPUT_TXT_FILE = "/app/output/playlist.txt"
 REFRESHED_CHANNELS_FILE = "/app/output/refetched_channels.json"
 TARGET_KEY = "ABCDEFGHIJKLMNOPQRSTUVWX"
-
 # ------------------
 
 app = Flask(__name__)
@@ -462,7 +461,6 @@ def get_m3u():
     try: return send_file(OUTPUT_M3U_FILE, mimetype='application/vnd.apple.mpegurl', as_attachment=False)
     except FileNotFoundError: return "File not found", 404
 
-
 @app.route('/txt')
 def get_txt():
     try: return send_file(OUTPUT_TXT_FILE, mimetype='text/plain', as_attachment=False)
@@ -512,7 +510,6 @@ def debug_url():
     except Exception as e: 
         debug_info["error"] = str(e)
     return jsonify(debug_info)
-
 
 def run_scheduler():
     schedule.every(11).minutes.do(generate_playlist)
