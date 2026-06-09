@@ -20,6 +20,7 @@ OUTPUT_M3U_FILE = "/app/output/playlist.m3u"
 OUTPUT_TXT_FILE = "/app/output/playlist.txt"
 REFRESHED_CHANNELS_FILE = "/app/output/refetched_channels.json"
 TARGET_KEY = "ABCDEFGHIJKLMNOPQRSTUVWX"
+
 # ------------------
 
 app = Flask(__name__)
@@ -175,10 +176,27 @@ def load_refreshed_channels():
     try:
         with open(REFRESHED_CHANNELS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
+
+        normalized = {}
         if isinstance(data, dict):
-            return {k: v for k, v in data.items() if isinstance(k, str)}
+            for channel_name, state in data.items():
+                if not isinstance(channel_name, str):
+                    continue
+                if isinstance(state, dict):
+                    normalized[channel_name] = {
+                        "last_refetch_at": state.get("last_refetch_at"),
+                        "after_90m_runs": int(state.get("after_90m_runs", 0) or 0),
+                    }
+                elif isinstance(state, str):
+                    # 兼容旧格式：值是时间戳字符串
+                    normalized[channel_name] = {"last_refetch_at": state, "after_90m_runs": 0}
+                else:
+                    normalized[channel_name] = {"last_refetch_at": None, "after_90m_runs": 0}
+            return normalized
+
         if isinstance(data, list):
-            return {item: None for item in data if isinstance(item, str)}
+            # 兼容旧格式：只记录了频道名列表
+            return {item: {"last_refetch_at": None, "after_90m_runs": 0} for item in data if isinstance(item, str)}
     except Exception:
         pass
     return {}
@@ -197,11 +215,18 @@ def cleanup_refreshed_channels(refreshed_channels, now, tz, window_hours=5):
     current_year = now.year
     window_seconds = window_hours * 3600
     cleaned = {}
-    for channel_name, refreshed_at in refreshed_channels.items():
+    for channel_name, state in refreshed_channels.items():
         match_dt = _parse_match_datetime_from_channel_name(channel_name, current_year, tz)
         if match_dt and abs((match_dt - now).total_seconds()) > window_seconds:
             continue
-        cleaned[channel_name] = refreshed_at
+
+        if isinstance(state, dict):
+            cleaned[channel_name] = {
+                "last_refetch_at": state.get("last_refetch_at"),
+                "after_90m_runs": int(state.get("after_90m_runs", 0) or 0),
+            }
+        else:
+            cleaned[channel_name] = {"last_refetch_at": None, "after_90m_runs": 0}
     return cleaned
 
 def keep_entries_within_time_window(existing_entries, now, tz, window_hours=5):
@@ -250,10 +275,12 @@ def generate_playlist():
 
     refresh_candidates = set()
     for channel_name in existing_channel_names:
-        match_dt = _parse_match_datetime_from_channel_name(channel_name, current_year, tz)
-        if not match_dt:
-            continue
-        if (now - match_dt).total_seconds() >= 1.5 * 3600 and channel_name not in refreshed_channels:
+        # 只要已经抓到过直播源，就按任务轮次计数：每次重抓之间间隔两次不重抓（第3、6、9...次）
+        state = refreshed_channels.get(channel_name, {"last_refetch_at": None, "after_90m_runs": 0})
+        state["after_90m_runs"] = int(state.get("after_90m_runs", 0) or 0) + 1
+        refreshed_channels[channel_name] = state
+
+        if state["after_90m_runs"] % 3 == 0:
             refresh_candidates.add(channel_name)
 
     success_count = 0
@@ -353,7 +380,15 @@ def generate_playlist():
                                     }
                                     existing_channel_names.add(specific_channel_name)
                                     if specific_channel_name in refresh_candidates:
-                                        refreshed_channels[specific_channel_name] = now.isoformat()
+                                        refreshed_channels[specific_channel_name] = {
+                                            "last_refetch_at": now.isoformat(),
+                                            "after_90m_runs": 0,
+                                        }
+                                    elif specific_channel_name not in refreshed_channels:
+                                        refreshed_channels[specific_channel_name] = {
+                                            "last_refetch_at": None,
+                                            "after_90m_runs": 0,
+                                        }
                                     
                                     success_count += 1
                         except Exception:
@@ -427,6 +462,7 @@ def get_m3u():
     try: return send_file(OUTPUT_M3U_FILE, mimetype='application/vnd.apple.mpegurl', as_attachment=False)
     except FileNotFoundError: return "File not found", 404
 
+
 @app.route('/txt')
 def get_txt():
     try: return send_file(OUTPUT_TXT_FILE, mimetype='text/plain', as_attachment=False)
@@ -477,8 +513,9 @@ def debug_url():
         debug_info["error"] = str(e)
     return jsonify(debug_info)
 
+
 def run_scheduler():
-    schedule.every(14).minutes.do(generate_playlist)
+    schedule.every(11).minutes.do(generate_playlist)
     while True:
         schedule.run_pending()
         time.sleep(30)
