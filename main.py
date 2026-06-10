@@ -9,6 +9,8 @@ import schedule
 import base64
 import urllib.parse
 import json
+import gc          # ✅ 新增：用于强制触发 Python 垃圾回收
+import subprocess  # ✅ 新增：用于执行系统级进程清理
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 from flask import Flask, send_file, request, jsonify
@@ -111,7 +113,6 @@ def extract_from_resource_tree(page):
             return url.split('paps.html?id=')[-1]
     return None
 
-
 def load_existing_entries_from_m3u():
     entries = []
     if not os.path.exists(OUTPUT_M3U_FILE):
@@ -187,14 +188,12 @@ def load_refreshed_channels():
                         "after_90m_runs": int(state.get("after_90m_runs", 0) or 0),
                     }
                 elif isinstance(state, str):
-                    # 兼容旧格式：值是时间戳字符串
                     normalized[channel_name] = {"last_refetch_at": state, "after_90m_runs": 0}
                 else:
                     normalized[channel_name] = {"last_refetch_at": None, "after_90m_runs": 0}
             return normalized
 
         if isinstance(data, list):
-            # 兼容旧格式：只记录了频道名列表
             return {item: {"last_refetch_at": None, "after_90m_runs": 0} for item in data if isinstance(item, str)}
     except Exception:
         pass
@@ -274,7 +273,6 @@ def generate_playlist():
 
     refresh_candidates = set()
     for channel_name in existing_channel_names:
-        # 只要已经抓到过直播源，就按任务轮次计数：每次重抓之间间隔两次不重抓（第3、6、9...次）
         state = refreshed_channels.get(channel_name, {"last_refetch_at": None, "after_90m_runs": 0})
         state["after_90m_runs"] = int(state.get("after_90m_runs", 0) or 0) + 1
         refreshed_channels[channel_name] = state
@@ -287,14 +285,18 @@ def generate_playlist():
 
     try:
         with sync_playwright() as p:
-            # ✅ 增加防内存泄漏关键参数
+            # ✅ 核心优化 1：加入极致压榨内存的 Chromium 启动参数
             browser = p.chromium.launch(
                 headless=True, 
                 args=[
                     '--no-sandbox', 
                     '--disable-setuid-sandbox',
                     '--disable-dev-shm-usage',
-                    '--disable-gpu'
+                    '--disable-gpu',
+                    '--single-process',               # 单进程模式
+                    '--js-flags="--max-old-space-size=128"', # 限制 V8 引擎内存
+                    '--disable-background-networking', # 禁用后台网络
+                    '--disable-extensions'            # 禁用所有扩展
                 ]
             )
             
@@ -307,7 +309,6 @@ def generate_playlist():
                     match_time_str = f"{current_year}-{match_time_raw}"
                     match_dt = tz.localize(datetime.datetime.strptime(match_time_str, "%Y-%m-%d %H:%M"))
                     
-                    # 抓取窗口：开赛前 2 小时到开赛后 30 分钟
                     time_diff_hours = (match_dt - now).total_seconds() / 3600
                     if not (-2 <= time_diff_hours <= 0.5):
                         continue
@@ -330,7 +331,6 @@ def generate_playlist():
                     
                     if not target_link: continue
 
-                    # ✅ 核心修复：为每场比赛开启独立的上下文和页面，阅后即焚，绝不复用
                     context = browser.new_context()
                     page = context.new_page()
 
@@ -339,7 +339,7 @@ def generate_playlist():
                         page.wait_for_timeout(2000)
                         detail_html = page.content()
                     except Exception:
-                        continue # 如果外层页报错，后续也会跳过，finally 仍会执行
+                        continue
 
                     detail_soup = BeautifulSoup(detail_html, 'html.parser')
                     target_lines = []
@@ -363,7 +363,6 @@ def generate_playlist():
                                 continue
                         
                         try:
-                            # 这里复用这一场比赛的专属 page 是可以的，因为一个比赛通常只有 2-3 个线路，不会无限堆积
                             page.goto(final_url, wait_until="load", timeout=15000)
                             page.wait_for_timeout(3000)
                             
@@ -396,7 +395,6 @@ def generate_playlist():
                 except Exception:
                     continue
                 finally:
-                    # ✅ 核心修复：无论本场比赛抓取成功与否，强制清理页面和上下文
                     if 'page' in locals() and not page.is_closed():
                         page.close()
                     if 'context' in locals():
@@ -444,6 +442,16 @@ def generate_playlist():
     finish_time = datetime.datetime.now(tz)
     print(f"[{finish_time.strftime('%Y-%m-%d %H:%M:%S')}] Task finished. New {success_count} lines, skipped {skip_count} existing lines, total {len(final_entries)} lines.")
 
+    # ==========================================
+    # ✅ 核心优化 2 & 3：强制 GC 与暴力杀进程防泄露
+    # ==========================================
+    gc.collect()
+    try:
+        subprocess.run(["pkill", "-f", "chrome"], check=False)
+        subprocess.run(["pkill", "-f", "playwright"], check=False)
+    except Exception:
+        pass
+
 
 # ==========================================
 # 极简 Web 路由
@@ -473,14 +481,18 @@ def debug_url():
     debug_info = {"target_url": target_url, "extracted_token": None, "decrypted_url": None, "frames_found": [], "resources_found": []}
     try:
         with sync_playwright() as p:
-            # ✅ Debug 路由同样增加参数和上下文管理
+            # ✅ Debug 路由同步加上内存限制参数
             browser = p.chromium.launch(
                 headless=True, 
                 args=[
                     '--no-sandbox', 
                     '--disable-setuid-sandbox',
                     '--disable-dev-shm-usage',
-                    '--disable-gpu'
+                    '--disable-gpu',
+                    '--single-process',
+                    '--js-flags="--max-old-space-size=128"',
+                    '--disable-background-networking',
+                    '--disable-extensions'
                 ]
             )
             context = browser.new_context()
