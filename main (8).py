@@ -512,7 +512,7 @@ def debug_url():
     return jsonify(debug_info)
 
 def run_scheduler():
-    schedule.every(11).minutes.do(generate_playlist)
+    schedule.every(14).minutes.do(generate_playlist)
     while True:
         schedule.run_pending()
         time.sleep(30)
