@@ -290,7 +290,7 @@ def generate_playlist():
                     '--disable-setuid-sandbox',
                     '--disable-dev-shm-usage',
                     '--disable-gpu'
-                    '--js-flags="--max-old-space-size=128"'  # 限制V8最大内存128M
+                    '--js-flags="--max-old-space-size=196"'  # 限制V8最大内存128M
                 ]
             )
             
