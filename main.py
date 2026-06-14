@@ -186,14 +186,12 @@ def load_refreshed_channels():
                         "after_90m_runs": int(state.get("after_90m_runs", 0) or 0),
                     }
                 elif isinstance(state, str):
-                    # 兼容旧格式：值是时间戳字符串
                     normalized[channel_name] = {"last_refetch_at": state, "after_90m_runs": 0}
                 else:
                     normalized[channel_name] = {"last_refetch_at": None, "after_90m_runs": 0}
             return normalized
 
         if isinstance(data, list):
-            # 兼容旧格式：只记录了频道名列表
             return {item: {"last_refetch_at": None, "after_90m_runs": 0} for item in data if isinstance(item, str)}
     except Exception:
         pass
@@ -273,7 +271,6 @@ def generate_playlist():
 
     refresh_candidates = set()
     for channel_name in existing_channel_names:
-        # 只要已经抓到过直播源，就按任务轮次计数：每次重抓之间间隔两次不重抓（第3、6、9...次）
         state = refreshed_channels.get(channel_name, {"last_refetch_at": None, "after_90m_runs": 0})
         state["after_90m_runs"] = int(state.get("after_90m_runs", 0) or 0) + 1
         refreshed_channels[channel_name] = state
@@ -286,7 +283,6 @@ def generate_playlist():
 
     try:
         with sync_playwright() as p:
-            # ✅ 增加防内存泄漏关键参数
             browser = p.chromium.launch(
                 headless=True, 
                 args=[
@@ -307,7 +303,6 @@ def generate_playlist():
                     match_time_str = f"{current_year}-{match_time_raw}"
                     match_dt = tz.localize(datetime.datetime.strptime(match_time_str, "%Y-%m-%d %H:%M"))
                     
-                    # 抓取窗口：开赛前 2 小时到开赛后 30 分钟
                     time_diff_hours = (match_dt - now).total_seconds() / 3600
                     if not (-2 <= time_diff_hours <= 0.5):
                         continue
@@ -330,8 +325,11 @@ def generate_playlist():
                     
                     if not target_link: continue
 
-                    # ✅ 核心修复：为每场比赛开启独立的上下文和页面，阅后即焚，绝不复用
                     context = browser.new_context()
+                    
+                    # ✅ 内存优化核心：拦截并直接终止图片、字体、CSS和媒体资源的请求
+                    context.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "stylesheet", "font", "media"] else route.continue_())
+
                     page = context.new_page()
 
                     try:
@@ -339,7 +337,7 @@ def generate_playlist():
                         page.wait_for_timeout(2000)
                         detail_html = page.content()
                     except Exception:
-                        continue # 如果外层页报错，后续也会跳过，finally 仍会执行
+                        continue 
 
                     detail_soup = BeautifulSoup(detail_html, 'html.parser')
                     target_lines = []
@@ -363,7 +361,6 @@ def generate_playlist():
                                 continue
                         
                         try:
-                            # 这里复用这一场比赛的专属 page 是可以的，因为一个比赛通常只有 2-3 个线路，不会无限堆积
                             page.goto(final_url, wait_until="load", timeout=15000)
                             page.wait_for_timeout(3000)
                             
@@ -396,12 +393,13 @@ def generate_playlist():
                 except Exception:
                     continue
                 finally:
-                    # ✅ 核心修复：无论本场比赛抓取成功与否，强制清理页面和上下文
+                    # 无论成功与否，单场比赛执行完立刻回收页面资源
                     if 'page' in locals() and not page.is_closed():
                         page.close()
                     if 'context' in locals():
                         context.close()
             
+            # 当前执行周期结束，彻底销毁浏览器实例
             browser.close()
     except Exception as e:
         print(f"Task encountered an error: {e}")
