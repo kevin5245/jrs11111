@@ -111,7 +111,6 @@ def extract_from_resource_tree(page):
             return url.split('paps.html?id=')[-1]
     return None
 
-
 def load_existing_entries_from_m3u():
     entries = []
     if not os.path.exists(OUTPUT_M3U_FILE):
@@ -295,6 +294,7 @@ def generate_playlist():
                     '--disable-setuid-sandbox',
                     '--disable-dev-shm-usage',
                     '--disable-gpu'
+                    '--js-flags="--max-old-space-size=128"'  # 限制V8最大内存128M
                 ]
             )
             
@@ -465,51 +465,6 @@ def get_m3u():
 def get_txt():
     try: return send_file(OUTPUT_TXT_FILE, mimetype='text/plain', as_attachment=False)
     except FileNotFoundError: return "File not found", 404
-
-@app.route('/debug')
-def debug_url():
-    target_url = request.args.get('url')
-    if not target_url: return "Bad Request", 400
-    debug_info = {"target_url": target_url, "extracted_token": None, "decrypted_url": None, "frames_found": [], "resources_found": []}
-    try:
-        with sync_playwright() as p:
-            # ✅ Debug 路由同样增加参数和上下文管理
-            browser = p.chromium.launch(
-                headless=True, 
-                args=[
-                    '--no-sandbox', 
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-gpu'
-                ]
-            )
-            context = browser.new_context()
-            page = context.new_page()
-            
-            try:
-                page.goto(target_url, wait_until="load", timeout=15000)
-                page.wait_for_timeout(3000) 
-                
-                for f in page.frames:
-                    debug_info["frames_found"].append(f.url)
-                    if 'paps.html?id=' in f.url: debug_info["extracted_token"] = f.url.split('paps.html?id=')[-1]
-                
-                resource_urls = page.evaluate("() => performance.getEntriesByType('resource').map(r => r.name)")
-                debug_info["resources_found"] = resource_urls
-                
-                if not debug_info["extracted_token"]:
-                    for url in resource_urls:
-                        if 'paps.html?id=' in url: debug_info["extracted_token"] = url.split('paps.html?id=')[-1]; break
-                
-                if debug_info["extracted_token"]: debug_info["decrypted_url"] = decrypt_id_to_url(debug_info["extracted_token"])
-            finally:
-                page.close()
-                context.close()
-                browser.close()
-                
-    except Exception as e: 
-        debug_info["error"] = str(e)
-    return jsonify(debug_info)
 
 def run_scheduler():
     schedule.every(14).minutes.do(generate_playlist)
